@@ -21,7 +21,8 @@
       </nav>
       <div id="connection" role="status">Connecting…</div>
     </header>
-    <main id="map" aria-label="Chat priority map">
+    <main id="map" aria-label="Chat priority map" aria-describedby="map-help">
+      <p id="map-help" hidden>Drag or use arrow keys to move. Right-click to toggle done.</p>
       <div class="axis horizontal"></div>
       <div class="axis vertical"></div>
       <div class="quadrant q1">Active <span>· High priority</span></div>
@@ -32,7 +33,7 @@
       <p id="empty" hidden>No chats yet.</p>
     </main>
     <main id="archive" aria-label="Archived chats" hidden>
-      <p id="archive-empty">Chats appear here after 10 minutes marked done.</p>
+      <p id="archive-empty">Done chats move here after 10 minutes.</p>
       <div id="archive-list"></div>
     </main>
     <div id="backdrop" hidden></div>

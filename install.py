@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the chat map as a macOS login service."""
+"""Install CodexMap."""
 import argparse
 import json
 import os
@@ -21,7 +21,7 @@ from update import FILES, exclusive_lock, replace_current, version_tuple
 
 def tailscale_settings(status, port):
     if status.get('BackendState') != 'Running':
-        raise RuntimeError('Sign in to Tailscale first, then run the installer again.')
+        raise RuntimeError('Sign in to Tailscale, then retry.')
     device = status['Self']
     dns = device.get('DNSName', '').rstrip('.')
     hostname = device.get('HostName', '')
@@ -33,7 +33,7 @@ def tailscale_settings(status, port):
         host = f'[{ip}]' if ':' in ip else ip
         origins.append(f'http://{host}:{port}')
     if not dns:
-        raise RuntimeError('Enable MagicDNS in Tailscale before setting up HTTPS.')
+        raise RuntimeError('Enable Tailscale MagicDNS, then retry.')
     origins.append(f'https://{dns}')
     return sorted(set(origins)), f'https://{dns}/'
 
@@ -58,7 +58,7 @@ def find_tailscale():
     for binary in options:
         if binary and Path(binary).is_file():
             return binary
-    raise RuntimeError('Install the Tailscale CLI first (brew install tailscale), or omit --tailscale for local setup.')
+    raise RuntimeError('Install Tailscale (brew install tailscale) or omit --tailscale.')
 
 
 def updater_plist(install_dir, logs, python):
@@ -83,31 +83,31 @@ def ensure_routes_available(binary, port, local_url):
             handlers = [handler for website in status.get('Web', {}).values() for handler in website.get('Handlers', {}).values()]
             if value.get('HTTPS') and handlers and all(handler.get('Proxy', '').rstrip('/') == local_url.rstrip('/') for handler in handlers):
                 continue
-        raise RuntimeError(f'Tailscale Serve already uses port {listener}. Keep that route or remove it before retrying CodexMap setup.')
+        raise RuntimeError(f'Tailscale Serve already uses port {listener}. Free that port or use local setup.')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--tailscale', action='store_true', help='Configure persistent private HTTPS and TCP routes')
-    parser.add_argument('--json', action='store_true', help='Print the final result as JSON')
-    parser.add_argument('--no-auto-update', action='store_true', help='Disable scheduled GitHub release updates')
-    parser.add_argument('--python', type=Path, help='Persistent Python interpreter for the service')
+    parser.add_argument('--tailscale', action='store_true', help='Enable Tailscale access')
+    parser.add_argument('--json', action='store_true', help='Print JSON')
+    parser.add_argument('--no-auto-update', action='store_true', help='Disable updates')
+    parser.add_argument('--python', type=Path, help='Python interpreter')
     parser.add_argument('--port', type=int, default=4399)
     parser.add_argument('--codex-home', type=Path, default=Path.home() / '.codex')
-    parser.add_argument('--allow-sleep', action='store_true', help='Omit the AC-power sleep assertion')
-    parser.add_argument('--dry-run', action='store_true', help='Print the setup without writing or starting anything')
+    parser.add_argument('--allow-sleep', action='store_true', help='Allow sleep on AC')
+    parser.add_argument('--dry-run', action='store_true', help='Preview setup')
     args = parser.parse_args()
     if sys.platform != 'darwin':
         raise RuntimeError('This installer requires macOS.')
     if sys.version_info < (3, 9):
-        raise RuntimeError('Python 3.9 or newer is required. Install Python with brew install python.')
+        raise RuntimeError('Requires Python 3.9+: brew install python.')
     if not 1024 <= args.port <= 65535:
         raise RuntimeError('Choose a port between 1024 and 65535.')
     if not SOURCE.is_dir():
         raise RuntimeError('Keep install.py beside the app folder from the ZIP.')
     codex_home = args.codex_home.expanduser().resolve()
     if not list(codex_home.glob('state_*.sqlite')):
-        raise RuntimeError('Open the Codex desktop app and start a chat first. Use --codex-home if its data is elsewhere.')
+        raise RuntimeError('Start a Codex chat first. For custom data paths, use --codex-home.')
     home = Path.home()
     install_dir = home / 'Library/Application Support/CodexMap'
     logs = home / 'Library/Logs/CodexMap'
@@ -135,7 +135,7 @@ def main():
     version_tuple(version)
     for filename in FILES:
         if not (SOURCE_ROOT / filename).is_file():
-            raise RuntimeError(f'Package is missing {filename}. Download the complete source ZIP again.')
+            raise RuntimeError(f'Missing {filename}. Download the source ZIP again.')
     install_source = True
     installed_version = install_dir / 'current' / 'VERSION'
     if installed_version.exists():
@@ -155,7 +155,7 @@ def main():
             try:
                 probe.bind(('127.0.0.1', args.port))
             except OSError:
-                raise RuntimeError(f'Port {args.port} is in use. Retry with --port 4400 (or another free port).')
+                raise RuntimeError(f'Port {args.port} is in use. Try --port 4400.')
     install_dir.mkdir(parents=True, exist_ok=True)
     logs.mkdir(parents=True, exist_ok=True)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -202,8 +202,8 @@ def main():
         print(json.dumps(result))
     else:
         print(f'Installed CodexMap {version}. Open {remote_url or local_url}')
-        print('Starts at login. Saved positions and marks stay on this Mac.')
-        print('Automatic updates check GitHub releases at login and every six hours.' if not args.no_auto_update else 'Automatic updates are disabled.')
+        print('Starts at login.')
+        print('Updates check GitHub every six hours.' if not args.no_auto_update else 'Updates disabled.')
 
 
 

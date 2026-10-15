@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the native installer and bundle the service source it installs.
+# Build and bundle the installer.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/dist}"
@@ -19,7 +19,7 @@ cp -R "$ROOT/app" "$APP/Contents/Resources/payload/app"
 for FILE in install.py update.py uninstall.py VERSION; do
     cp "$ROOT/$FILE" "$APP/Contents/Resources/payload/$FILE"
 done
-# Keep bytecode and local state out of the distribution.
+# Exclude Python bytecode.
 find "$APP/Contents/Resources/payload" -name '__pycache__' -type d -exec rm -rf {} +
 find "$APP/Contents/Resources/payload" -name '*.pyc' -delete
 cat > "$APP/Contents/Info.plist" <<PLIST

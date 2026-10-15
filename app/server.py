@@ -1,4 +1,4 @@
-"""Local Codex chat map. Reads Codex data without modifying it."""
+"""Serve the Codex chat map."""
 import json
 import re
 import sqlite3
@@ -104,7 +104,7 @@ def codex_database():
             columns = {r[1] for r in db.execute('PRAGMA table_info(threads)')}
         if {'id', 'title', 'rollout_path', 'updated_at', 'archived'} <= columns:
             return path
-    raise RuntimeError('No compatible Codex state database found. Open Codex and start a chat first.')
+    raise RuntimeError('No compatible Codex database. Start a chat or update CodexMap.')
 
 
 def reverse_lines(path):
@@ -190,7 +190,7 @@ def snapshot():
         for row in rows:
             path = Path(row['rollout_path'])
             try:
-                # Running chats keep writing their logs, including older resumed chats.
+                # Resumed chats update their logs.
                 modified = path.stat().st_mtime
                 if modified < today and row['id'] not in TRACKED and row['id'] not in state['state']:
                     continue
@@ -243,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.valid_host():
             return
-        # Reject requests from other web origins before launching a local URL.
+        # Restrict writes to configured origins.
         origin = self.headers.get('Origin')
         if origin not in ALLOWED_ORIGINS:
             self.response(403, b'Forbidden', 'text/plain')

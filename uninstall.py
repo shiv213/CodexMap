@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove CodexMap login services. Keep saved positions, marks, and config."""
+"""Uninstall CodexMap; keep saved data."""
 import os
 from pathlib import Path
 import subprocess
@@ -15,8 +15,8 @@ def main():
         if result.returncode and subprocess.run(['launchctl', 'print', target], capture_output=True).returncode == 0:
             sys.exit('Could not stop the service: ' + result.stderr.decode().strip())
         (Path.home() / 'Library/LaunchAgents' / f'{label}.plist').unlink(missing_ok=True)
-    print('Removed CodexMap services. Saved data and logs remain in Library.')
-    print('Tailscale routes remain. See README.md to remove the dashboard listeners.')
+    print('Uninstalled. Saved data and logs kept.')
+    print('Tailscale routes kept. Removal commands: README.md.')
 
 
 if __name__ == '__main__':

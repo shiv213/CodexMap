@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the package with fake Codex data. Does not install a service."""
+"""Test with fake chats and temporary storage."""
 import importlib.util
 import json
 from pathlib import Path
@@ -119,7 +119,7 @@ def verify_updates():
                     raise AssertionError('Concurrent updater accepted')
             except RuntimeError:
                 pass
-    print('PASS: stable versions, release assets, checksums, ZIP paths, symlinks, atomic swap, rollback, saved data, and update lock.')
+    print('PASS: updater checks, rollback, and locking.')
 
 
 def run():
@@ -143,13 +143,13 @@ def run():
         codex.mkdir()
         rollout = codex / 'fake-rollout.jsonl'
         events = [
-            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'A fake chat for package verification.'}]}},
+            {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'Test chat.'}]}},
             {'type': 'event_msg', 'payload': {'type': 'task_complete', 'turn_id': 'test-turn'}},
             {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Fake task finished.\n<oai-mem-citation>Hidden metadata</oai-mem-citation>'}]}},
             {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': '<codex_internal_context>Hidden automatic prompt</codex_internal_context>'}]}},
         ]
         rollout.write_text('\n'.join(json.dumps(e) for e in events) + '\n')
-        # Check schema discovery and optional columns without using real Codex files.
+        # Test schema discovery and optional columns.
         with sqlite3.connect(codex / 'state_7.sqlite') as db:
             db.execute('CREATE TABLE threads(id TEXT,title TEXT,rollout_path TEXT,updated_at INTEGER,archived INTEGER,agent_path TEXT)')
             db.execute('INSERT INTO threads VALUES (?,?,?,?,?,?)', (IDENTITY, 'Fixture chat', str(rollout), int(time.time()), 0, '/root'))
@@ -226,8 +226,8 @@ def run():
             assert not request(base + '/api/chats')['threads'][0]['archived']
             assert update({'done': True})['doneAt'] > first['doneAt']
             assert not request(base + '/api/chats')['threads'][0]['archived']
-            print('PASS: schema discovery, root chats, messages, status, field merges, origin checks, validation, archive timer, restart persistence, unmark, and fresh timer.')
-            print('PASS: teammate-specific Tailscale origins. No real chat data or services were changed.')
+            print('PASS: chat data, state, permissions, and archive timing.')
+            print('PASS: Tailscale origins.')
         finally:
             if process and process.poll() is None:
                 stop(process)

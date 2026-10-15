@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing stable tag, for example v1.0.0'
+        description: 'Stable tag (vMAJOR.MINOR.PATCH)'
         required: true
         type: string
 

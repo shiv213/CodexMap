@@ -48,12 +48,12 @@ private enum SetupError: LocalizedError {
     private var payload: URL { Bundle.main.resourceURL!.appendingPathComponent("payload") }
 
     func install() {
-        step = .working; detail = "Checking your Mac…"
+        step = .working; detail = "Checking…"
         Task {
             do {
                 python = await findPython()
                 guard python != nil else { step = .python; return }
-                detail = "Installing the dashboard and login service…"
+                detail = "Installing…"
                 try await installDashboard(tailscale: false)
                 installed = true
                 if privateAccess { await prepareTailscale() } else { step = .complete }
@@ -64,11 +64,11 @@ private enum SetupError: LocalizedError {
     func retryPython() { install() }
 
     func downloadPython() {
-        step = .working; detail = "Downloading Python from python.org…"
+        step = .working; detail = "Downloading Python…"
         Task {
             do {
                 try await downloadPackage(URL(string: "https://www.python.org/ftp/python/3.13.9/python-3.13.9-macos11.pkg")!, signer: "Developer ID Installer: Python Software Foundation (BMM5U3QVKW)")
-                detail = "Finish the Python installer, then check again."
+                detail = "Finish installing Python, then check again."
                 step = .python
             } catch { fail(error) }
         }
@@ -84,10 +84,10 @@ private enum SetupError: LocalizedError {
                       let packages = metadata["MacZips"] as? [String: String],
                       let filename = packages["universal-package"],
                       filename.range(of: "^Tailscale-[0-9.]+-macos\\.pkg$", options: .regularExpression) != nil else {
-                    throw SetupError.message("Tailscale’s download list could not be read. Try again shortly.")
+                    throw SetupError.message("Could not find the Tailscale download. Retry.")
                 }
                 try await downloadPackage(URL(string: "https://pkgs.tailscale.com/stable/\(filename)")!, signer: "Developer ID Installer: Tailscale Inc. (W5364U7YZB)")
-                detail = "Finish the Tailscale installer, then check again."
+                detail = "Finish installing Tailscale, then check again."
                 step = .tailscale
             } catch { fail(error) }
         }
@@ -113,7 +113,7 @@ private enum SetupError: LocalizedError {
         }
         candidates.append("/usr/bin/python3")
         for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
-            // Avoid prompting macOS to install developer tools when its Python is a stub.
+            // Skip the developer-tools stub.
             if candidate == "/usr/bin/python3" {
                 guard let developer = try? await command("/usr/bin/xcode-select", ["-p"]), developer.status == 0 else { continue }
             }
@@ -123,7 +123,7 @@ private enum SetupError: LocalizedError {
     }
 
     private func installDashboard(tailscale: Bool) async throws {
-        guard let python else { throw SetupError.message("Install Python 3.9 or newer, then check again.") }
+        guard let python else { throw SetupError.message("Install Python 3.9+, then retry.") }
         var arguments = [payload.appendingPathComponent("install.py").path, "--json"]
         if tailscale { arguments.append("--tailscale") }
         if !automaticUpdates { arguments.append("--no-auto-update") }
@@ -133,7 +133,7 @@ private enum SetupError: LocalizedError {
               let data = String(line).data(using: .utf8),
               let resultJSON = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let local = resultJSON["localUrl"] as? String else {
-            throw SetupError.message("Setup finished without returning a dashboard link. See ~/Library/Logs/CodexMap for details.")
+            throw SetupError.message("No dashboard link returned. Check ~/Library/Logs/CodexMap.")
         }
         localURL = local; remoteURL = resultJSON["remoteUrl"] as? String
     }
@@ -144,21 +144,21 @@ private enum SetupError: LocalizedError {
 
     private func prepareTailscale() async {
         tailscaleInstalled = tailscaleBinary() != nil
-        guard let binary = tailscaleBinary() else { detail = "Install Tailscale to open your map from your other devices."; step = .tailscale; return }
+        guard let binary = tailscaleBinary() else { detail = "Install Tailscale for access from other devices."; step = .tailscale; return }
         do {
             let result = try await command(binary, ["status", "--json"])
-            // Older CLI clients can print a version warning before the JSON.
+            // Skip CLI warnings before the JSON.
             let jsonStart = result.output.firstIndex(of: "{")
             let jsonEnd = result.output.lastIndex(of: "}")
             let json = jsonStart.flatMap { start in jsonEnd.map { String(result.output[start...$0]) } }
             if result.status == 0, let data = json?.data(using: .utf8),
                let status = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                status["BackendState"] as? String == "Running" {
-                detail = "Creating your private dashboard link…"
+                detail = "Setting up Tailscale…"
                 try await installDashboard(tailscale: true)
                 step = .complete
             } else {
-                detail = "Open Tailscale, approve its VPN connection, and sign in. Then finish setup."
+                detail = "Open Tailscale, approve VPN access, and sign in."
                 step = .tailscale
                 if FileManager.default.fileExists(atPath: "/Applications/Tailscale.app") { openTailscale() }
             }
@@ -167,7 +167,7 @@ private enum SetupError: LocalizedError {
 
     private func downloadPackage(_ url: URL, signer: String) async throws {
         let (temporary, response) = try await URLSession.shared.download(from: url)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw SetupError.message("The download failed. Try again shortly.") }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw SetupError.message("Download failed. Retry.") }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CodexMap-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(url.lastPathComponent)
@@ -176,9 +176,9 @@ private enum SetupError: LocalizedError {
         let trusted = signature.output.contains("Status: signed by a developer certificate issued by Apple for distribution") || signature.output.contains("Status: signed by a certificate trusted by")
         guard signature.status == 0, trusted, signature.output.contains(signer), signature.output.contains("Notarization: trusted by the Apple notary service") else {
             try? FileManager.default.removeItem(at: directory)
-            throw SetupError.message("The download’s signature could not be verified. Setup stopped before opening it.")
+            throw SetupError.message("Package signature check failed.")
         }
-        guard NSWorkspace.shared.open(destination) else { throw SetupError.message("Open the downloaded package at \(destination.path).") }
+        guard NSWorkspace.shared.open(destination) else { throw SetupError.message("Open the package at \(destination.path).") }
     }
 }
 
@@ -213,14 +213,13 @@ struct SetupView: View {
                 MapMark()
                 VStack(alignment: .leading, spacing: 5) {
                     Text("CodexMap").font(.system(size: 29, weight: .semibold))
-                    Text("Your chats. One quiet map.").font(.system(size: 14)).foregroundStyle(.secondary)
+                    Text("Your Codex chats, mapped.").font(.system(size: 14)).foregroundStyle(.secondary)
                 }
             }.padding(.bottom, 30)
             content.frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 24)
             Divider().padding(.bottom, 15)
             HStack {
-                Text("Runs on this Mac · Private by default").font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer()
                 Button(model.step == .complete ? "Done" : "Close") { NSApplication.shared.terminate(nil) }.keyboardShortcut(.cancelAction)
             }
@@ -233,21 +232,20 @@ struct SetupView: View {
     @ViewBuilder private var content: some View {
         switch model.step {
         case .welcome:
-            Text("Keep your Codex chats in view.").font(.system(size: 18, weight: .medium)).padding(.bottom, 10)
-            Text("Drag chats between priorities. Preview messages. Mark them done.").font(.system(size: 13)).foregroundStyle(.secondary).padding(.bottom, 21)
-            Toggle("Access from my other devices with Tailscale", isOn: $model.privateAccess).toggleStyle(.checkbox).font(.system(size: 13)).padding(.bottom, 11)
-            Toggle("Install updates automatically", isOn: $model.automaticUpdates).toggleStyle(.checkbox).font(.system(size: 13))
-            Text("Updates come from shiv213/CodexMap releases. Your saved map stays on this Mac.").font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 6).padding(.bottom, 20)
-            Button("Install CodexMap", action: model.install).buttonStyle(MapButtonStyle())
+            Text("Install on this Mac").font(.system(size: 18, weight: .medium)).padding(.bottom, 10)
+            Text("Open Codex and start a chat first.").font(.system(size: 13)).foregroundStyle(.secondary).padding(.bottom, 21)
+            Toggle("Access from other devices (Tailscale)", isOn: $model.privateAccess).toggleStyle(.checkbox).font(.system(size: 13)).padding(.bottom, 11)
+            Toggle("Automatic updates", isOn: $model.automaticUpdates).toggleStyle(.checkbox).font(.system(size: 13))
+            Text("From shiv213/CodexMap releases.").font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 6).padding(.bottom, 20)
+            Button("Install", action: model.install).buttonStyle(MapButtonStyle())
         case .working:
             HStack(spacing: 14) { ProgressView().controlSize(.small); Text(model.detail).font(.system(size: 15)) }.padding(.top, 22)
-            Text("You can close this window after setup finishes.").font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 15)
         case .python:
-            Text("Python is needed once.").font(.system(size: 18, weight: .medium)).padding(.bottom, 10)
-            Text(model.detail.hasPrefix("Finish") ? model.detail : "CodexMap uses Python 3.9 or newer. Download the signed Python installer, finish its steps, then check again.").font(.system(size: 13)).foregroundStyle(.secondary).padding(.bottom, 20)
+            Text("Install Python").font(.system(size: 18, weight: .medium)).padding(.bottom, 10)
+            Text(model.detail.hasPrefix("Finish") ? model.detail : "Python 3.9+ is required. Install it, then check again.").font(.system(size: 13)).foregroundStyle(.secondary).padding(.bottom, 20)
             HStack { Button("Download Python", action: model.downloadPython).buttonStyle(MapButtonStyle()); Button("Check again", action: model.retryPython) }
         case .tailscale:
-            Text("Open your map from anywhere.").font(.system(size: 18, weight: .medium)).padding(.bottom, 10)
+            Text("Tailscale").font(.system(size: 18, weight: .medium)).padding(.bottom, 10)
             Text(model.detail).font(.system(size: 13)).foregroundStyle(.secondary).padding(.bottom, 20)
             if model.tailscaleInstalled {
                 HStack { Button("Open Tailscale", action: model.openTailscale); Button("Finish setup", action: model.checkTailscale).buttonStyle(MapButtonStyle()) }
@@ -256,12 +254,12 @@ struct SetupView: View {
             }
             Button("Use this Mac only", action: model.useLocalOnly).buttonStyle(.link).font(.system(size: 12)).padding(.top, 15)
         case .complete:
-            Label("Your map is ready.", systemImage: "checkmark.circle.fill").font(.system(size: 19, weight: .medium)).padding(.bottom, 12)
+            Label("Installed", systemImage: "checkmark.circle.fill").font(.system(size: 19, weight: .medium)).padding(.bottom, 12)
             Text(model.dashboardURL).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8)).padding(.bottom, 12)
-            Text(model.remoteURL == nil ? "Bookmark this link. The dashboard starts whenever you sign in to your Mac." : "Open this link on a device signed in to your Tailscale network. This Mac must stay online.").font(.system(size: 12)).foregroundStyle(.secondary).padding(.bottom, 20)
+            Text(model.remoteURL == nil ? "Starts when you log in." : "Use this link on your Tailscale devices. Keep this Mac awake.").font(.system(size: 12)).foregroundStyle(.secondary).padding(.bottom, 20)
             HStack { Button("Open map", action: model.openDashboard).buttonStyle(MapButtonStyle()); Button("Copy link", action: model.copyURL) }
         case .failed:
-            Text("Setup needs a hand.").font(.system(size: 18, weight: .medium)).padding(.bottom, 10)
+            Text("Setup failed").font(.system(size: 18, weight: .medium)).padding(.bottom, 10)
             ScrollView { Text(model.error).font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 120).padding(.bottom, 15)
             HStack { Button("Try again", action: model.retry).buttonStyle(MapButtonStyle()); if model.privateAccess && model.hasInstalled { Button("Use this Mac only", action: model.useLocalOnly) } }
         }

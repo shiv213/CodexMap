@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build release source and checksums from an explicit list of public files."""
+"""Package release files and checksums."""
 import argparse
 import hashlib
 from pathlib import Path
@@ -24,7 +24,7 @@ def files():
         raise RuntimeError('Missing release files: ' + ', '.join(missing))
     for path in selected:
         if path.is_symlink():
-            raise RuntimeError('Release files must not be symlinks: ' + str(path.relative_to(ROOT)))
+            raise RuntimeError('Release symlink: ' + str(path.relative_to(ROOT)))
     return sorted(set(selected))
 
 

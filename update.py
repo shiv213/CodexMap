@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check GitHub releases and update CodexMap without changing saved data."""
+"""Update CodexMap from GitHub releases."""
 import argparse
 import contextlib
 import fcntl
@@ -27,7 +27,7 @@ MAX_DOWNLOAD = 40 * 1024 * 1024
 def version_tuple(value):
     match = re.fullmatch(r'v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', value.strip())
     if not match:
-        raise ValueError('Release version must be a stable semantic version.')
+        raise ValueError('Invalid stable release version.')
     return tuple(int(part) for part in match.groups())
 
 
@@ -45,12 +45,12 @@ def download(url, limit=MAX_DOWNLOAD):
 
 def verified_source(release, fetch=download):
     if release.get('draft') or release.get('prerelease'):
-        raise ValueError('Only published stable releases can be installed.')
+        raise ValueError('Requires a published stable release.')
     version = release['tag_name'].removeprefix('v')
     version_tuple(version)
     assets = {asset['name']: asset['browser_download_url'] for asset in release.get('assets', [])}
     if ASSET not in assets or 'SHA256SUMS.txt' not in assets:
-        raise ValueError('Release is missing its source ZIP or checksum asset.')
+        raise ValueError('Missing source ZIP or checksum.')
     checksum_text = fetch(assets['SHA256SUMS.txt'], 65536).decode('utf-8')
     hashes = {}
     for line in checksum_text.splitlines():
@@ -59,7 +59,7 @@ def verified_source(release, fetch=download):
             hashes[match[2]] = match[1].lower()
     data = fetch(assets[ASSET], MAX_DOWNLOAD)
     if hashes.get(ASSET) != hashlib.sha256(data).hexdigest():
-        raise ValueError('The release ZIP checksum does not match.')
+        raise ValueError('ZIP checksum mismatch.')
     return version, data
 
 
@@ -71,16 +71,16 @@ def extract_source(data, destination):
         for entry in archive.infolist():
             path = PurePosixPath(entry.filename)
             if path.is_absolute() or '..' in path.parts or '\\' in entry.filename:
-                raise ValueError('Release ZIP contains an unsafe path.')
+                raise ValueError('Unsafe ZIP path.')
             if (entry.external_attr >> 16) & 0o170000 == 0o120000:
-                raise ValueError('Release ZIP contains a symbolic link.')
+                raise ValueError('ZIP contains a symlink.')
             name = str(path)
             if name.startswith('CodexMap/'):
                 name = name[len('CodexMap/'):]
             if entry.is_dir() or name not in FILES:
                 continue
             if name in found:
-                raise ValueError('Release ZIP contains a duplicate source file.')
+                raise ValueError('Duplicate ZIP file.')
             total += entry.file_size
             if total > MAX_DOWNLOAD or entry.file_size > 10 * 1024 * 1024:
                 raise ValueError('Expanded release exceeds the size limit.')
@@ -89,7 +89,7 @@ def extract_source(data, destination):
             target.write_bytes(archive.read(entry))
             found.add(name)
     if found != set(FILES):
-        raise ValueError('Release ZIP is missing required source files.')
+        raise ValueError('Missing ZIP source files.')
     for name in ('app/server.py', 'install.py', 'uninstall.py', 'update.py'):
         compile((destination / name).read_text(), name, 'exec')
 
@@ -114,7 +114,7 @@ def wait_healthy(base, expected_version, timeout=12):
         except (OSError, ValueError):
             pass
         time.sleep(.2)
-    raise RuntimeError('Updated service did not become healthy.')
+    raise RuntimeError('Updated service failed to start.')
 
 
 def restart_service():
@@ -130,7 +130,7 @@ def apply_release(base, version, data, restart=restart_service, healthy=wait_hea
     previous_version = (previous / 'VERSION').read_text().strip()
     target = releases / version
     if target.exists():
-        # A failed earlier attempt can leave a staged release behind.
+        # Remove a failed staging attempt.
         if target.resolve() == previous:
             raise ValueError('Release is already installed.')
         shutil.rmtree(target)
@@ -139,7 +139,7 @@ def apply_release(base, version, data, restart=restart_service, healthy=wait_hea
         stage.mkdir()
         extract_source(data, stage)
         if (stage / 'VERSION').read_text().strip() != version:
-            raise ValueError('ZIP version differs from the GitHub release tag.')
+            raise ValueError('ZIP and release versions differ.')
         stage.rename(target)
     try:
         replace_current(base, target)
@@ -153,7 +153,7 @@ def apply_release(base, version, data, restart=restart_service, healthy=wait_hea
         except Exception as rollback_error:
             raise RuntimeError(f'Update failed: {error}. Old files restored, but service restart failed: {rollback_error}') from error
         raise RuntimeError(f'Update failed; previous version restored: {error}') from error
-    # Keep the prior release so rollback is possible and bound disk usage.
+    # Keep the current and previous releases.
     for release in releases.iterdir():
         if release.is_dir() and release not in (target, previous) and not release.name.startswith('.'):
             shutil.rmtree(release)
@@ -166,7 +166,7 @@ def exclusive_lock(base):
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RuntimeError('Another installation or update is already running.')
+            raise RuntimeError('Installation or update already running.')
         yield
 
 
@@ -175,7 +175,7 @@ def check(base, check_only=False, fetch=download):
     release = json.loads(fetch(f'https://api.github.com/repos/{REPOSITORY}/releases/latest', 1024 * 1024))
     latest = release['tag_name'].removeprefix('v')
     if release.get('prerelease') or release.get('draft'):
-        raise ValueError('Latest release is not a published stable release.')
+        raise ValueError('Latest release is not stable.')
     available = version_tuple(latest) > version_tuple(current)
     result = {'currentVersion': current, 'latestVersion': latest, 'updateAvailable': available, 'updated': False}
     if available and not check_only:

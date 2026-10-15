@@ -248,7 +248,7 @@ function prepareMobileLayout() {
           };
       });
   });
-  // Resolve collisions after fitting older saved positions to a smaller viewport.
+  // Fit saved positions without overlaps.
   const occupied = [];
   mapChats()
     .sort(
@@ -463,14 +463,14 @@ function render() {
     el.querySelector(".label").textContent = chat.title;
     el.setAttribute(
       "aria-label",
-      `${chat.title}, ${markedDone ? "marked done" : chat.status}. ${touchUI() ? "Tap for preview and actions." : "Click to open in Codex. Right-click to toggle done. Arrow keys move."}`,
+      `${chat.title}, ${markedDone ? "done" : chat.status}`,
     );
     if (!drag || drag.id !== chat.id) position(el, getPosition(chat.id));
   });
   document.querySelector("#empty").hidden = visible.length > 0;
   document.querySelector("#empty").textContent = chats.length
-    ? "All chats are in Archived."
-    : "No chats have run today. New runs will appear here.";
+    ? "All chats archived."
+    : "No chats today.";
   if (hovered && !drag) updatePreview();
 }
 function scheduleClose() {
@@ -527,7 +527,7 @@ function updatePreview() {
     : "Mark done";
   document.querySelector("#preview-title").textContent = chat.title;
   document.querySelector("#preview-status").textContent =
-    `${markedDone ? "marked done" : chat.status} · ${new Date(chat.updatedAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    `${markedDone ? "done" : chat.status} · ${new Date(chat.updatedAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
   const container = document.querySelector("#messages");
   const scroll = container.scrollTop;
   const stickToBottom =
@@ -536,7 +536,7 @@ function updatePreview() {
   container.dataset.chatId = chat.id;
   container.replaceChildren();
   if (!chat.messages.length)
-    container.textContent = "No recent messages available.";
+    container.textContent = "No messages yet.";
   chat.messages.forEach((message) => {
     const article = document.createElement("article");
     article.className = `message ${message.role}`;
@@ -562,7 +562,7 @@ async function openChat(id) {
     render();
   } catch {
     document.querySelector("#connection").textContent =
-      "Could not open chat in Codex";
+      "Couldn't open Codex.";
   } finally {
     opening = false;
   }
