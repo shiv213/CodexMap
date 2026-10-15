@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>CodexMap</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>CodexMap</h1>
+      <nav class="view-tabs" aria-label="Chat views">
+        <button id="map-tab" aria-pressed="true">Map</button>
+        <button id="archive-tab" aria-pressed="false">
+          Archived <span id="archive-count">0</span>
+        </button>
+      </nav>
+      <div id="connection" role="status">Connecting…</div>
+    </header>
+    <main id="map" aria-label="Chat priority map">
+      <div class="axis horizontal"></div>
+      <div class="axis vertical"></div>
+      <div class="quadrant q1">Active <span>· High priority</span></div>
+      <div class="quadrant q2">Passive <span>· High priority</span></div>
+      <div class="quadrant q3">Active <span>· Low priority</span></div>
+      <div class="quadrant q4">Passive <span>· Low priority</span></div>
+      <div id="nodes"></div>
+      <p id="empty" hidden>No chats yet.</p>
+    </main>
+    <main id="archive" aria-label="Archived chats" hidden>
+      <p id="archive-empty">Chats appear here after 10 minutes marked done.</p>
+      <div id="archive-list"></div>
+    </main>
+    <div id="backdrop" hidden></div>
+    <aside id="preview" hidden aria-label="Chat preview">
+      <div class="preview-head">
+        <button
+          id="close-preview"
+          class="icon-button"
+          aria-label="Close preview"
+        >
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="m6 6 12 12M18 6 6 18" />
+          </svg>
+        </button>
+        <h2 id="preview-title"></h2>
+        <span id="preview-status"></span>
+      </div>
+      <div id="messages" tabindex="0" aria-label="Latest messages"></div>
+      <div class="preview-actions">
+        <button id="toggle-done" class="secondary-button">Mark done</button>
+        <button id="open-chat" class="primary-button">
+          Open in Codex
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M7 17 17 7M7 7h10v10" />
+          </svg>
+        </button>
+      </div>
+    </aside>
+    <footer class="legend" aria-label="Chat status legend">
+      <span><i class="running"></i>Running</span>
+      <span><i class="finished"></i>Finished</span>
+      <span><i class="done"></i>Done</span>
+    </footer>
+    <script src="/app.js"></script>
+  </body>
+</html>
