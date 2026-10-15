@@ -15,7 +15,7 @@ Requires macOS 13+ and an existing Codex desktop chat. Supports Intel and Apple 
 - Drag chats between Active / Passive and High / Low priority. Arrow keys also move nodes.
 - Hover for messages; tap on mobile. Click to open the chat on the Mac.
 - Right-click to mark or unmark done. On mobile, use the preview's done button.
-- Done chats turn gray and move to Archived after 10 minutes. Unmark to restore.
+- Done chats turn gray and move to Archived after 10 minutes. Unmark or start a new run to restore their position.
 
 The map refreshes every four seconds. Messages appear oldest to newest; previews open at the bottom. Positions and marks sync across browsers.
 

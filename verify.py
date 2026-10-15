@@ -15,6 +15,7 @@ import zipfile
 import hashlib
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent
@@ -298,7 +299,33 @@ def run():
             assert not request(base + '/api/chats')['threads'][0]['archived']
             assert update({'done': True})['doneAt'] > first['doneAt']
             assert not request(base + '/api/chats')['threads'][0]['archived']
-            print('PASS: chat data, state, permissions, and archive timing.')
+            mobile = {'x': .3, 'y': .6, 'manual': True}
+            archived_state = update({'mobile': mobile, 'seen': 'test-turn'})
+            archived_state['doneAt'] = time.time() - 601
+            with sqlite3.connect(state_db) as db:
+                db.execute('UPDATE node_state SET data=? WHERE id=?', (json.dumps(archived_state), IDENTITY))
+
+            def start_turn(timestamp, turn):
+                event = {'timestamp': datetime.fromtimestamp(timestamp, timezone.utc).isoformat(),
+                         'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': turn}}
+                with rollout.open('a') as log:
+                    log.write(json.dumps(event) + '\n')
+
+            start_turn(archived_state['doneAt'] - 1, 'old-running-turn')
+            old_run = request(base + '/api/chats')
+            assert old_run['threads'][0]['status'] == 'running' and old_run['threads'][0]['archived']
+            start_turn(time.time(), 'resumed-turn')
+            resumed = request(base + '/api/chats')
+            expected_state = {'x': .4, 'y': .8, 'done': False, 'mobile': mobile}
+            assert resumed['threads'][0]['status'] == 'running' and not resumed['threads'][0]['archived']
+            assert resumed['state'][IDENTITY] == expected_state
+            assert resumed['stateVersion'] == old_run['stateVersion'] + 1
+            assert request(base + '/api/chats')['stateVersion'] == resumed['stateVersion']
+            stop(process)
+            process = start()
+            restored = request(base + '/api/chats')
+            assert not restored['threads'][0]['archived'] and restored['state'][IDENTITY] == expected_state
+            print('PASS: chat data, state, permissions, archive timing, and resumed-chat restoration.')
             print('PASS: Tailscale origins.')
         finally:
             if process and process.poll() is None:

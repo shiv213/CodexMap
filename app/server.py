@@ -87,6 +87,32 @@ def write_state(updates, initialize=False):
             db.execute('INSERT INTO node_state VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (identity, json.dumps(data)))
         db.execute('UPDATE state_version SET version=version+1 WHERE id=1')
     return read_state()
+
+
+def restore_resumed_chats(threads, now):
+    with sqlite3.connect(STATE_DB, timeout=5) as db:
+        db.execute('BEGIN IMMEDIATE')
+        changed = False
+        for chat in threads:
+            if chat['status'] != 'running' or not chat.get('runStartedAt'):
+                continue
+            row = db.execute('SELECT data FROM node_state WHERE id=?', (chat['id'],)).fetchone()
+            if not row:
+                continue
+            node = json.loads(row[0])
+            done_at = node.get('doneAt')
+            if not node.get('done') or done_at is None or now - done_at < 600 or chat['runStartedAt'] <= done_at:
+                continue
+            node['done'] = False
+            node.pop('doneAt', None)
+            node.pop('seen', None)
+            db.execute('UPDATE node_state SET data=? WHERE id=?', (json.dumps(node), chat['id']))
+            changed = True
+        if changed:
+            db.execute('UPDATE state_version SET version=version+1 WHERE id=1')
+    return read_state()
+
+
 ALLOWED_ORIGINS = {
     f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}',
     *CONFIG.get('allowedOrigins', []),
@@ -128,7 +154,7 @@ def read_chat(path):
     if key in CACHE and CACHE[key][0] == stamp:
         return CACHE[key][1]
     messages, seen = [], set()
-    status, turn = 'idle', ''
+    status, turn, started_at = 'idle', '', None
     found_status = False
     for line in reverse_lines(path):
         if not any(token in line for token in (b'"task_started"', b'"task_complete"', b'"turn_aborted"', b'"task_failed"', b'"message"', b'"agent_message"')):
@@ -143,6 +169,11 @@ def read_chat(path):
             if kind in ('task_started', 'task_complete', 'turn_aborted', 'task_failed'):
                 status = {'task_started': 'running', 'task_complete': 'finished', 'turn_aborted': 'interrupted', 'task_failed': 'failed'}[kind]
                 turn = p.get('turn_id', p.get('root_turn_id', ''))
+                if kind == 'task_started':
+                    try:
+                        started_at = datetime.fromisoformat(str(event['timestamp']).replace('Z', '+00:00')).timestamp()
+                    except (KeyError, TypeError, ValueError):
+                        pass
                 found_status = True
         if event.get('type') == 'response_item' and p.get('type') == 'message' and p.get('role') in ('user', 'assistant'):
             text = '\n'.join(c.get('text', '') for c in p.get('content', []) if c.get('type') in ('input_text', 'output_text', 'text')).strip()
@@ -165,7 +196,7 @@ def read_chat(path):
                 messages.append({'role': p['role'], 'text': text[:6000], 'time': event.get('timestamp', '')})
         if found_status and len(messages) >= 8:
             break
-    result = {'status': status, 'turnId': turn, 'messages': list(reversed(messages))}
+    result = {'status': status, 'turnId': turn, 'runStartedAt': started_at, 'messages': list(reversed(messages))}
     CACHE[key] = (stamp, result)
     return result
 
@@ -198,9 +229,11 @@ def snapshot():
             except OSError:
                 continue
             TRACKED.add(row['id'])
-            node = state['state'].get(row['id'], {})
-            archived = bool(node.get('done') and node.get('doneAt') is not None and now - node['doneAt'] >= 600)
-            threads.append({'id': row['id'], 'title': row['name'] or row['title'], 'pinned': bool(row['is_pinned']) or row['id'] in pinned, 'updatedAt': modified, 'archived': archived, **chat})
+            threads.append({'id': row['id'], 'title': row['name'] or row['title'], 'pinned': bool(row['is_pinned']) or row['id'] in pinned, 'updatedAt': modified, **chat})
+    state = restore_resumed_chats(threads, now)
+    for chat in threads:
+        node = state['state'].get(chat['id'], {})
+        chat['archived'] = bool(node.get('done') and node.get('doneAt') is not None and now - node['doneAt'] >= 600)
     return {'threads': threads, 'updatedAt': now, **state}
 
 
