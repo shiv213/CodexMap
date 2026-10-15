@@ -11,12 +11,14 @@ import subprocess
 import sys
 import time
 import urllib.request
+import tempfile
+import uuid
 
 LABEL = 'com.codex.chat-map.dashboard'
 SOURCE_ROOT = Path(__file__).resolve().parent
 SOURCE = SOURCE_ROOT / 'app'
 UPDATE_LABEL = 'com.codex.chat-map.updater'
-from update import FILES, exclusive_lock, replace_current, version_tuple
+from update import FILES, exclusive_lock, replace_current, version_tuple, wait_healthy
 
 
 def tailscale_settings(status, port):
@@ -84,6 +86,117 @@ def ensure_routes_available(binary, port, local_url):
             if value.get('HTTPS') and handlers and all(handler.get('Proxy', '').rstrip('/') == local_url.rstrip('/') for handler in handlers):
                 continue
         raise RuntimeError(f'Tailscale Serve already uses port {listener}. Free that port or use local setup.')
+
+
+def agent_loaded(label, run=subprocess.run):
+    return run(['launchctl', 'print', f'gui/{os.getuid()}/{label}'], capture_output=True).returncode == 0
+
+
+def stop_agent(label, run=subprocess.run, sleep=time.sleep, attempts=30):
+    target = f'gui/{os.getuid()}/{label}'
+    if not agent_loaded(label, run):
+        return
+    run(['launchctl', 'bootout', target], capture_output=True)
+    for _ in range(attempts):
+        if not agent_loaded(label, run):
+            return
+        sleep(.2)
+    raise RuntimeError(f'Could not stop {label}. Retry in a moment.')
+
+
+def bootstrap_agent(label, path, run=subprocess.run, sleep=time.sleep, attempts=30):
+    for _ in range(attempts):
+        result = run(['launchctl', 'bootstrap', f'gui/{os.getuid()}', str(path)], capture_output=True)
+        if result.returncode == 0:
+            return
+        # launchd can report I/O error while an unloaded job finishes exiting.
+        if result.returncode not in (5, 37):
+            break
+        sleep(.2)
+    raise RuntimeError(f'Could not start {label}. See the CodexMap service log.')
+
+
+def configure_agent(label, path, content, run=subprocess.run, sleep=time.sleep):
+    old = path.read_bytes() if path.exists() else None
+    loaded = agent_loaded(label, run)
+    if content is not None and loaded and old == content:
+        run(['launchctl', 'kickstart', '-k', f'gui/{os.getuid()}/{label}'], check=True, capture_output=True)
+        return
+    if loaded:
+        stop_agent(label, run, sleep)
+    if content is None:
+        path.unlink(missing_ok=True)
+        return
+    atomic_write(path, content)
+    bootstrap_agent(label, path, run, sleep)
+
+
+def atomic_write(path, content):
+    temporary = path.with_name(path.name + '.next')
+    temporary.write_bytes(content)
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+
+
+def installation_transaction(base, config, agents, release, activate, healthy, restore_health=None):
+    """Restore code, config, and agents if any installation step fails."""
+    current = base / 'current'
+    previous = current.resolve() if current.exists() else None
+    config_path = base / 'config.json'
+    old_config = config_path.read_bytes() if config_path.exists() else None
+    old_agents = [(label, path, path.read_bytes() if path.exists() else None, agent_loaded(label)) for label, path, _ in agents]
+    try:
+        replace_current(base, release)
+        atomic_write(config_path, json.dumps(config, indent=2).encode() + b'\n')
+        activate()
+        healthy()
+    except Exception as error:
+        failures = []
+        if previous is not None:
+            replace_current(base, previous)
+        else:
+            current.unlink(missing_ok=True)
+        if old_config is not None:
+            atomic_write(config_path, old_config)
+        else:
+            config_path.unlink(missing_ok=True)
+        for label, path, content, was_loaded in old_agents:
+            try:
+                configure_agent(label, path, content if was_loaded else None)
+                if not was_loaded and content is not None:
+                    atomic_write(path, content)
+            except Exception as rollback_error:
+                failures.append(str(rollback_error))
+        if previous is not None and any(label == LABEL and loaded for label, _, _, loaded in old_agents):
+            try:
+                if restore_health is not None:
+                    restore_health()
+                else:
+                    wait_healthy(base, (previous / 'VERSION').read_text().strip())
+            except Exception as rollback_error:
+                failures.append(str(rollback_error))
+        if failures:
+            raise RuntimeError(f'{error}. Recovery failed: {"; ".join(failures)}') from error
+        raise RuntimeError(f'{error} Previous setup restored.' if previous is not None else f'{error} Incomplete setup removed.') from error
+
+
+def stage_release(base, version, install_source):
+    if not install_source:
+        return (base / 'current').resolve()
+    releases = base / 'releases'
+    releases.mkdir(parents=True, exist_ok=True)
+    release = releases / version
+    if release.exists():
+        release = releases / f'{version}-{uuid.uuid4().hex[:8]}'
+    with tempfile.TemporaryDirectory(prefix='.install-', dir=releases) as temporary:
+        stage = Path(temporary) / 'payload'
+        stage.mkdir()
+        for filename in FILES:
+            destination = stage / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(SOURCE_ROOT / filename, destination)
+        stage.rename(release)
+    return release
 
 
 def main():
@@ -159,43 +272,33 @@ def main():
     install_dir.mkdir(parents=True, exist_ok=True)
     logs.mkdir(parents=True, exist_ok=True)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    with exclusive_lock(install_dir):
-        if running:
-            subprocess.run(['launchctl', 'bootout', target], check=True)
-        release = install_dir / 'releases' / version
-        release.mkdir(parents=True, exist_ok=True)
-        for filename in FILES if install_source else ():
-            destination = release / filename
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if (SOURCE_ROOT / filename).resolve() != destination.resolve():
-                shutil.copy2(SOURCE_ROOT / filename, destination)
-        replace_current(install_dir, release)
-        config_path.write_text(json.dumps(config, indent=2) + '\n')
-        config_path.chmod(0o600)
-        plist_path.write_bytes(plistlib.dumps(plist))
-        subprocess.run(['launchctl', 'bootstrap', f'gui/{os.getuid()}', str(plist_path)], check=True, capture_output=True)
-        for attempt in range(50):
-            try:
-                with urllib.request.urlopen(local_url + 'health', timeout=2) as response:
-                    health = json.load(response)
-                if health.get('service') == 'codex-chat-map' and health.get('version') == version:
-                    break
-            except (OSError, ValueError):
-                pass
-            time.sleep(.2)
-        else:
-            raise RuntimeError(f'Service did not start. Check {logs / "error.log"}.')
-        if binary:
-            subprocess.run([binary, 'serve', '--bg', '--https=443', local_url.rstrip('/')], check=True, capture_output=True)
-            subprocess.run([binary, 'serve', '--bg', f'--tcp={args.port}', f'tcp://127.0.0.1:{args.port}'], check=True, capture_output=True)
-    update_target = f'gui/{os.getuid()}/{UPDATE_LABEL}'
     update_path = plist_path.parent / f'{UPDATE_LABEL}.plist'
-    subprocess.run(['launchctl', 'bootout', update_target], capture_output=True)
-    if args.no_auto_update:
-        update_path.unlink(missing_ok=True)
-    else:
-        update_path.write_bytes(plistlib.dumps(updater_plist(install_dir, logs, python)))
-        subprocess.run(['launchctl', 'bootstrap', f'gui/{os.getuid()}', str(update_path)], check=True, capture_output=True)
+    agents = [(LABEL, plist_path, plistlib.dumps(plist)),
+              (UPDATE_LABEL, update_path, None if args.no_auto_update else plistlib.dumps(updater_plist(install_dir, logs, python)))]
+    with exclusive_lock(install_dir):
+        release = stage_release(install_dir, version, install_source)
+
+        def activate():
+            configure_agent(*agents[0])
+
+        def healthy():
+            for attempt in range(60):
+                try:
+                    with urllib.request.urlopen(local_url + 'health', timeout=2) as response:
+                        health = json.load(response)
+                    if health.get('service') == 'codex-chat-map' and health.get('version') == version:
+                        break
+                except (OSError, ValueError):
+                    pass
+                time.sleep(.2)
+            else:
+                raise RuntimeError(f'Service did not start. Check {logs / "error.log"}.')
+            if binary:
+                subprocess.run([binary, 'serve', '--bg', '--https=443', local_url.rstrip('/')], check=True, capture_output=True)
+                subprocess.run([binary, 'serve', '--bg', f'--tcp={args.port}', f'tcp://127.0.0.1:{args.port}'], check=True, capture_output=True)
+            configure_agent(*agents[1])
+
+        installation_transaction(install_dir, config, agents, release, activate, healthy)
     result = {'installed': True, 'localUrl': local_url, 'remoteUrl': remote_url,
               'installDirectory': str(install_dir), 'version': version, 'autoUpdates': not args.no_auto_update}
     if args.json:

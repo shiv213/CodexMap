@@ -122,6 +122,78 @@ def verify_updates():
     print('PASS: updater checks, rollback, and locking.')
 
 
+def verify_installer_lifecycle():
+    spec = importlib.util.spec_from_file_location('lifecycle_installer', ROOT / 'install.py')
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
+    from types import SimpleNamespace
+    with tempfile.TemporaryDirectory(prefix='codexmap-installer-check-') as temporary:
+        base = Path(temporary).resolve()
+        path = base / 'dashboard.plist'
+        old_content = b'fixture existing agent'
+        path.write_bytes(old_content)
+        calls = []
+        def same_run(command, **kwargs):
+            calls.append(command[1])
+            return SimpleNamespace(returncode=0)
+        installer.configure_agent('fixture.dashboard', path, old_content, same_run, lambda _: None)
+        assert calls == ['print', 'kickstart']
+        assert 'bootout' not in calls and 'bootstrap' not in calls
+        loaded_probes = iter((0, 0, 0, 1))
+        calls.clear()
+        def delayed_stop(command, **kwargs):
+            calls.append(command[1])
+            return SimpleNamespace(returncode=next(loaded_probes) if command[1] == 'print' else 0)
+        installer.stop_agent('fixture.dashboard', delayed_stop, lambda _: None)
+        assert calls.count('print') == 4 and calls.count('bootout') == 1
+        attempts = iter((5, 37, 0))
+        calls.clear()
+        def retry_bootstrap(command, **kwargs):
+            calls.append(command[1])
+            return SimpleNamespace(returncode=next(attempts))
+        installer.bootstrap_agent('fixture.dashboard', path, retry_bootstrap, lambda _: None)
+        assert calls == ['bootstrap', 'bootstrap', 'bootstrap']
+        try:
+            installer.bootstrap_agent('fixture.dashboard', path, lambda *a, **kw: SimpleNamespace(returncode=5), lambda _: None, attempts=2)
+            raise AssertionError('Permanent bootstrap failure accepted')
+        except RuntimeError as error:
+            assert 'Could not start' in str(error) and 'root' not in str(error)
+        old = base / 'releases/1.0.0'
+        old.mkdir(parents=True)
+        (old / 'VERSION').write_text('1.0.0\n')
+        installer.replace_current(base, old)
+        new = installer.stage_release(base, '1.0.0', True)
+        assert new != old and (old / 'VERSION').read_text() == '1.0.0\n'
+        config_path = base / 'config.json'
+        config_path.write_bytes(b'{"port":4399,"fixture":"previous"}\n')
+        original_config = config_path.read_bytes()
+        state = base / 'dashboard.sqlite3'
+        state.write_bytes(b'fixture positions and done marks')
+        loaded = installer.agent_loaded
+        configure = installer.configure_agent
+        try:
+            installer.agent_loaded = lambda label: True
+            restored = []
+            installer.configure_agent = lambda label, p, content: (p.write_bytes(content), restored.append(label))
+            def activate():
+                path.write_bytes(b'new agent configuration')
+            def failed_health():
+                raise RuntimeError('Fixture service failed to start')
+            try:
+                installer.installation_transaction(base, {'port': 4400}, [(installer.LABEL, path, b'new')], new, activate, failed_health, lambda: restored.append('health-verified'))
+                raise AssertionError('Failed installation accepted')
+            except RuntimeError as error:
+                assert 'Previous setup restored.' in str(error)
+            assert (base / 'current').resolve() == old
+            assert config_path.read_bytes() == original_config
+            assert path.read_bytes() == old_content and restored == [installer.LABEL, 'health-verified']
+            assert state.read_bytes() == b'fixture positions and done marks'
+        finally:
+            installer.agent_loaded = loaded
+            installer.configure_agent = configure
+    print('PASS: reinstall kickstart, delayed bootout, bootstrap retries, fresh staging, and failed-install rollback of code, config, agent, and saved data.')
+
+
 def run():
     spec = importlib.util.spec_from_file_location('installer', ROOT / 'install.py')
     installer = importlib.util.module_from_spec(spec)
@@ -236,3 +308,4 @@ def run():
 if __name__ == '__main__':
     run()
     verify_updates()
+    verify_installer_lifecycle()

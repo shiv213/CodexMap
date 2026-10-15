@@ -47,6 +47,25 @@ private enum SetupError: LocalizedError {
     var hasInstalled: Bool { installed }
     private var payload: URL { Bundle.main.resourceURL!.appendingPathComponent("payload") }
 
+    private func installerSource() -> URL {
+        let current = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/CodexMap/current")
+        let installedScript = current.appendingPathComponent("install.py")
+        func version(at directory: URL) -> [Int]? {
+            guard let text = try? String(contentsOf: directory.appendingPathComponent("VERSION"), encoding: .utf8) else { return nil }
+            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard value.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+$", options: .regularExpression) != nil else { return nil }
+            let components = value.split(separator: ".").compactMap { Int($0) }
+            return components.count == 3 ? components : nil
+        }
+        // An old downloaded installer must not run obsolete service-management code.
+        if FileManager.default.fileExists(atPath: installedScript.path),
+           let installedVersion = version(at: current), let bundledVersion = version(at: payload),
+           bundledVersion.lexicographicallyPrecedes(installedVersion) {
+            return current
+        }
+        return payload
+    }
+
     func install() {
         step = .working; detail = "Checking…"
         Task {
@@ -124,11 +143,22 @@ private enum SetupError: LocalizedError {
 
     private func installDashboard(tailscale: Bool) async throws {
         guard let python else { throw SetupError.message("Install Python 3.9+, then retry.") }
-        var arguments = [payload.appendingPathComponent("install.py").path, "--json"]
+        var arguments = [installerSource().appendingPathComponent("install.py").path, "--json"]
         if tailscale { arguments.append("--tailscale") }
         if !automaticUpdates { arguments.append("--no-auto-update") }
-        let result = try await command(python, arguments)
-        guard result.status == 0 else { throw SetupError.message(result.output.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        var result = try await command(python, arguments)
+        // The login updater may still hold the install lock during private setup.
+        for _ in 0..<30 {
+            guard result.status != 0, result.output.contains("Installation or update already running.") else { break }
+            detail = "Waiting for the current update…"
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            result = try await command(python, arguments)
+        }
+        guard result.status == 0 else {
+            let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = output.components(separatedBy: "Setup failed: ").last ?? output
+            throw SetupError.message(message.isEmpty ? "Setup did not finish. Retry, or check ~/Library/Logs/CodexMap." : String(message.prefix(800)))
+        }
         guard let line = result.output.split(separator: "\n").last(where: { $0.hasPrefix("{") }),
               let data = String(line).data(using: .utf8),
               let resultJSON = try JSONSerialization.jsonObject(with: data) as? [String: Any],
