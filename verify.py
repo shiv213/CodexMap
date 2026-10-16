@@ -204,6 +204,7 @@ def run():
     assert 'KeepAlive' not in updater_agent
     service = installer.service_plist(Path('/tmp/codexmap'), Path('/tmp/logs'), '/usr/bin/python3', False)
     assert service['EnvironmentVariables']['CODEXMAP_DATA_DIR'] == '/tmp/codexmap'
+    assert service['ProcessType'] == 'Interactive'
     assert service['ProgramArguments'][-1] == '/tmp/codexmap/current/app/server.py'
     origins, remote = installer.tailscale_settings({'BackendState': 'Running', 'Self': {
         'DNSName': 'test-mac.example.ts.net.', 'HostName': 'test-mac', 'TailscaleIPs': ['100.64.0.1']

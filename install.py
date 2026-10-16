@@ -48,7 +48,7 @@ def service_plist(install_dir, logs, python, keep_awake):
         'Label': LABEL, 'ProgramArguments': command,
         'WorkingDirectory': str(install_dir / 'current' / 'app'),
         'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 10,
-        'ProcessType': 'Background',
+        'ProcessType': 'Interactive',
         'EnvironmentVariables': {'CODEXMAP_DATA_DIR': str(install_dir), 'PATH': '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'},
         'StandardOutPath': str(logs / 'service.log'),
         'StandardErrorPath': str(logs / 'error.log'),
